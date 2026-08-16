@@ -70,10 +70,21 @@ async fn await_control_result(
 
 /// `GET /get_model_info` (+ `/model_info` alias) — static model metadata from
 /// `server_args` (no scheduler round-trip); `is_generation` always true.
+///
+/// Under `SGLANG_RUST_SERVER=1` this is the only `/model_info` a client can
+/// reach — `launch_server` never mounts the Python app — so it answers the same
+/// keys. It answers them from the launch blob, which is the whole of this
+/// server's config knowledge: `server_args` is parsed once at boot and held
+/// behind an `Arc`, and no route mounted here changes weights or parsers.
+/// Python's tokenizer process keeps a control-plane log on top of the record
+/// and reports that; this server has none, so these are the record.
 async fn model_info(State(state): State<AppState>) -> Response {
     let sa = &state.server_args;
     let body = serde_json::json!({
         "model_path": sa.model_path,
+        // No weight update can move it here (no route mounted on this server
+        // changes weights), so the launch value is also the current one.
+        "served_model_name": sa.served_model_name,
         "tokenizer_path": sa.tokenizer_path,
         "is_generation": true,
         // Python's `TokenizerManager` merges this into every request
@@ -81,7 +92,15 @@ async fn model_info(State(state): State<AppState>) -> Response {
         // `RustServer.launch` REFUSES to start when it is set. It can therefore
         // only be null here — echoing it keeps the field's shape.
         "preferred_sampling_params": sa.preferred_sampling_params,
-        "weight_version": serde_json::Value::Null,
+        // Python answers the effective value (`config_value`: the launch record
+        // unless a control-plane write landed). No route mounted here changes
+        // weights, so the launch value in the blob is also the current one.
+        "weight_version": sa.weight_version,
+        "load_format": sa.load_format,
+        // `auto` never reaches the blob: `resolve_auto_parsers` writes the
+        // selected parser into `server_args` before the scheduler forks.
+        "reasoning_parser": sa.reasoning_parser,
+        "tool_call_parser": sa.tool_call_parser,
     });
     (
         StatusCode::OK,
